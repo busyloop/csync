@@ -30,6 +30,11 @@ csync [options] <repo-path>[@ref]... <remote-target>
   Append `@<ref>` to sync a git repo at a specific ref.
 - `<remote-target>` — rsync destination base in `host:/absolute/path` form
   (`user@host:/path` works too). Always the **last** argument.
+  `localhost:/path` is special: it writes directly to the local filesystem
+  without ssh. (A bare path is deliberately not accepted as the destination —
+  with sources and destination in one positional list, a forgotten
+  destination must not silently turn your last source into the target. Use
+  `user@localhost:/path` if you really want ssh to localhost.)
 
 The ref synced for each git repo is, in order of precedence:
 
@@ -82,6 +87,9 @@ More examples:
 
 # Mix a git repo pinned to a release with a plain directory of static assets
 ./csync.py app@release assets host:/srv/box
+
+# Local destination: no ssh, plain filesystem write
+./csync.py api worker localhost:/srv/staging
 ```
 
 ## Output format
@@ -159,11 +167,12 @@ error.
 - Plain (non-git) directories are rsynced verbatim — there is no notion of
   tracked/ignored files without git, so everything in them is synced except
   `--exclude` patterns. A `@ref` suffix on a plain directory is an error.
-- Remote parent directories are created automatically (`--mkpath` when the
-  local rsync supports it, otherwise a `mkdir -p` wrapped into
-  `--rsync-path`). On a dry run without `--mkpath` support, no remote
-  directories are pre-created, so syncing into a not-yet-existing directory
-  can report an error that a real run would not hit.
+- Destination parent directories are created automatically (`--mkpath` when
+  the local rsync supports it, otherwise a `mkdir -p` wrapped into
+  `--rsync-path`; plain `os.makedirs` for `localhost:` destinations). On a
+  dry run, destination directories are never pre-created, so syncing into a
+  not-yet-existing directory can report an error that a real run would not
+  hit.
 - `--delete` does not remove an existing remote `.git` directory: `.git` is
   excluded from the transfer, and rsync leaves excluded paths on the receiver
   alone.

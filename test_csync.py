@@ -222,6 +222,18 @@ class TestBuildRsyncCmd(unittest.TestCase):
                                       dry_run=True, mkpath=False)
         self.assertNotIn("--rsync-path", cmd)
 
+    def test_local_dest_has_bare_path_and_no_ssh_helpers(self):
+        cmd = csync.build_rsync_cmd("/tmp/wt", "localhost", "/base/repo",
+                                      mkpath=True, local_dest=True)
+        self.assertEqual(cmd[-1], "/base/repo/")
+        self.assertNotIn("--mkpath", cmd)
+        self.assertNotIn("--rsync-path", cmd)
+
+    def test_local_dest_without_mkpath_has_no_mkdir_wrapper(self):
+        cmd = csync.build_rsync_cmd("/tmp/wt", "localhost", "/base/repo",
+                                      mkpath=False, local_dest=True)
+        self.assertNotIn("--rsync-path", cmd)
+
     def test_trailing_slash_on_source(self):
         cmd = csync.build_rsync_cmd("/tmp/wt/", "h", "/base/repo", mkpath=True)
         self.assertEqual(cmd[-2], "/tmp/wt/")

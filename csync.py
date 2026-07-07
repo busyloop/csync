@@ -224,7 +224,8 @@ def rsync_supports_mkpath():
 # ---------------------------------------------------------------------------
 
 def build_rsync_cmd(src_dir, host, remote_dir, delete=True, dry_run=False,
-                    verbose=False, excludes=(), exclude_git=True, mkpath=False):
+                    verbose=False, excludes=(), exclude_git=True, mkpath=False,
+                    local_dest=False):
     """Build the rsync argv syncing src_dir/ to host:remote_dir/.
 
     exclude_git anchors '/.git' at the transfer root: in a temporary worktree
@@ -234,6 +235,8 @@ def build_rsync_cmd(src_dir, host, remote_dir, delete=True, dry_run=False,
     Dry runs itemize changes and compare by checksum (temp worktree mtimes are
     always fresh, so time-based comparison would flag every file); the output
     is captured and parsed rather than streamed.
+    local_dest bypasses ssh entirely (destination 'localhost:'): the rsync
+    destination is the bare path, and the caller pre-creates it.
     """
     cmd = ["rsync", "-a"]
     if dry_run:
@@ -246,12 +249,13 @@ def build_rsync_cmd(src_dir, host, remote_dir, delete=True, dry_run=False,
         cmd.append("--exclude=/.git")
     for pattern in excludes:
         cmd.append("--exclude=" + pattern)
-    if mkpath:
-        cmd.append("--mkpath")
-    elif not dry_run:
-        cmd += ["--rsync-path", "mkdir -p %s && rsync" % shlex.quote(remote_dir)]
+    if not local_dest:
+        if mkpath:
+            cmd.append("--mkpath")
+        elif not dry_run:
+            cmd += ["--rsync-path", "mkdir -p %s && rsync" % shlex.quote(remote_dir)]
     cmd.append(src_dir.rstrip("/") + "/")
-    cmd.append("%s:%s/" % (host, remote_dir))
+    cmd.append(remote_dir + "/" if local_dest else "%s:%s/" % (host, remote_dir))
     return cmd
 
 
@@ -318,7 +322,14 @@ def report_diff(output, host, remote_dir):
 # syncing
 # ---------------------------------------------------------------------------
 
-def sync_repo(local, rel, ref, host, base_path, args, mkpath):
+def prepare_dest(remote_dir, args, local_dest):
+    """For localhost destinations, pre-create the target directory ourselves
+    (the --mkpath / --rsync-path machinery is ssh-only)."""
+    if local_dest and not args.dry_run:
+        os.makedirs(remote_dir, exist_ok=True)
+
+
+def sync_repo(local, rel, ref, host, base_path, args, mkpath, local_dest):
     """Sync one git repository at ref. Raises SyncError on any failure."""
     v = args.verbose
     remote_dir = remote_dir_for(base_path, rel)
@@ -333,17 +344,19 @@ def sync_repo(local, rel, ref, host, base_path, args, mkpath):
     try:
         add_worktree(local, commit, worktree, v)
 
+        prepare_dest(remote_dir, args, local_dest)
         cmd = build_rsync_cmd(
             worktree, host, remote_dir,
             delete=not args.no_delete, dry_run=args.dry_run, verbose=v,
             excludes=args.exclude, exclude_git=True, mkpath=mkpath,
+            local_dest=local_dest,
         )
         res = run(cmd, verbose=v, capture=args.dry_run)
         if res.returncode != 0:
             msg = "rsync failed (exit %d)" % res.returncode
-            if args.dry_run and not mkpath:
-                msg += " — note: on a dry run the remote directory is not pre-created; " \
-                       "a real run creates it first"
+            if args.dry_run and (local_dest or not mkpath):
+                msg += " — note: on a dry run the destination directory is not " \
+                       "pre-created; a real run creates it first"
             raise SyncError(msg)
         changes = 0
         if args.dry_run:
@@ -351,10 +364,12 @@ def sync_repo(local, rel, ref, host, base_path, args, mkpath):
 
         if args.include_git:
             git_dir = git_dir_of(local)
+            prepare_dest(remote_dir + "/.git", args, local_dest)
             cmd = build_rsync_cmd(
                 git_dir, host, remote_dir + "/.git",
                 delete=not args.no_delete, dry_run=args.dry_run, verbose=v,
                 excludes=(), exclude_git=False, mkpath=mkpath,
+                local_dest=local_dest,
             )
             res = run(cmd, verbose=v, capture=args.dry_run)
             if res.returncode != 0:
@@ -368,13 +383,15 @@ def sync_repo(local, rel, ref, host, base_path, args, mkpath):
     return "%s:%s/" % (host, remote_dir), commit, changes
 
 
-def sync_plain(local, rel, host, base_path, args, mkpath):
+def sync_plain(local, rel, host, base_path, args, mkpath, local_dest):
     """Sync a non-git directory as-is. No fetch, no worktree."""
     remote_dir = remote_dir_for(base_path, rel)
+    prepare_dest(remote_dir, args, local_dest)
     cmd = build_rsync_cmd(
         local, host, remote_dir,
         delete=not args.no_delete, dry_run=args.dry_run, verbose=args.verbose,
         excludes=args.exclude, exclude_git=not args.include_git, mkpath=mkpath,
+        local_dest=local_dest,
     )
     res = run(cmd, verbose=args.verbose, capture=args.dry_run)
     if res.returncode != 0:
@@ -441,6 +458,11 @@ def main(argv=None):
             if shutil.which(tool) is None:
                 raise UsageError("required tool not found on PATH: %s" % tool)
         host, base_path = split_remote_target(args.remote_target)
+        # 'localhost:' means the local filesystem, no ssh. (A bare path is
+        # deliberately not accepted: with sources and destination in one
+        # positional list, a forgotten destination must not silently turn
+        # the last source into the target. user@localhost: forces real ssh.)
+        local_dest = host == "localhost"
         repos = []  # (rel, local, ref, is_git)
         seen = set()
         for arg in args.repos:
@@ -482,10 +504,12 @@ def main(argv=None):
                 print("--> [%d/%d] %s (plain directory)" % (i, len(repos), rel), flush=True)
         try:
             if is_git:
-                dest, commit, changes = sync_repo(local, rel, ref, host, base_path, args, mkpath)
+                dest, commit, changes = sync_repo(local, rel, ref, host, base_path,
+                                                  args, mkpath, local_dest)
                 result["commit"] = commit[:12]
             else:
-                dest, changes = sync_plain(local, rel, host, base_path, args, mkpath)
+                dest, changes = sync_plain(local, rel, host, base_path,
+                                           args, mkpath, local_dest)
             if args.verbose:
                 print("    %s -> %s" % (ok_status, dest), flush=True)
             result["status"] = ok_status
