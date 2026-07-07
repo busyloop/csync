@@ -24,10 +24,12 @@ rsync-style: sources first, destination last.
 csync [options] <repo-path>[@ref]... <remote-target>
 ```
 
-- `<repo-path>[@ref]...` — one or more local directory paths, relative to
-  the current directory unless absolute. Absolute paths must live under the
-  current directory; the relative layout is preserved on the remote.
-  Append `@<ref>` to sync a git repo at a specific ref.
+- `<repo-path>[@ref]...` — one or more local directory paths.
+  Sources under the current directory keep their relative layout on the
+  destination (`subdir/repo` → `<dest>/subdir/repo`); sources anywhere else
+  (`/tmp/bar`, `~/code/foo`, `../elsewhere`) land under their basename
+  (`~/code/foo` → `<dest>/foo`). Two sources mapping to the same destination
+  name is an error. Append `@<ref>` to sync a git repo at a specific ref.
 - `<remote-target>` — rsync destination base in `host:/absolute/path` form
   (`user@host:/path` works too). Always the **last** argument.
   `localhost:/path` is special: it writes directly to the local filesystem
@@ -90,6 +92,9 @@ More examples:
 
 # Local destination: no ssh, plain filesystem write
 ./csync.py api worker localhost:/srv/staging
+
+# Sources can live anywhere; out-of-tree paths land under their basename
+./csync.py ~/code/foo /tmp/bar localhost:/tmp/destination
 ```
 
 ## Output format
@@ -212,6 +217,7 @@ install -m 0755 csync.py /usr/local/bin/csync
 python3 -m unittest -v
 ```
 
-Tests cover argument parsing, remote-target parsing, path normalization and
-escape rejection, remote path mapping, rsync command construction, and the
-summary output format. They run no git or rsync commands.
+Tests cover argument parsing, remote-target parsing, source-to-destination
+path mapping (including collision and escape safety), rsync command
+construction, and the summary output format. They run no git or rsync
+commands.

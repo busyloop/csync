@@ -123,49 +123,67 @@ class TestSplitRemoteTarget(unittest.TestCase):
             csync.split_remote_target("h::module")
 
 
-class TestRepoRelPath(unittest.TestCase):
+class TestMapSource(unittest.TestCase):
     CWD = "/work/dir"
 
-    def rel(self, arg):
-        return csync.repo_rel_path(arg, self.CWD)
+    def map(self, arg):
+        return csync.map_source(arg, self.CWD)
 
+    # sources under cwd keep their relative layout
     def test_plain(self):
-        self.assertEqual(self.rel("repo1"), "repo1")
+        self.assertEqual(self.map("repo1"), ("/work/dir/repo1", "repo1"))
 
     def test_dot_slash(self):
-        self.assertEqual(self.rel("./repo"), "repo")
+        self.assertEqual(self.map("./repo")[1], "repo")
 
     def test_trailing_slash(self):
-        self.assertEqual(self.rel("repo/"), "repo")
+        self.assertEqual(self.map("repo/")[1], "repo")
 
-    def test_subdir(self):
-        self.assertEqual(self.rel("subdir/repo3"), "subdir/repo3")
+    def test_subdir_layout_preserved(self):
+        self.assertEqual(self.map("subdir/repo3"),
+                         ("/work/dir/subdir/repo3", "subdir/repo3"))
 
     def test_inner_dotdot_collapsed(self):
-        self.assertEqual(self.rel("a/../b"), "b")
+        self.assertEqual(self.map("a/../b")[1], "b")
 
-    def test_absolute_inside_cwd(self):
-        self.assertEqual(self.rel("/work/dir/sub/repo"), "sub/repo")
+    def test_absolute_inside_cwd_keeps_layout(self):
+        self.assertEqual(self.map("/work/dir/sub/repo"),
+                         ("/work/dir/sub/repo", "sub/repo"))
 
-    def test_escape_rejected(self):
-        with self.assertRaises(UsageError):
-            self.rel("..")
-        with self.assertRaises(UsageError):
-            self.rel("../elsewhere")
-        with self.assertRaises(UsageError):
-            self.rel("sub/../../elsewhere")
+    # sources outside cwd map to their basename
+    def test_absolute_outside_cwd_uses_basename(self):
+        self.assertEqual(self.map("/tmp/bar"), ("/tmp/bar", "bar"))
 
-    def test_absolute_outside_cwd_rejected(self):
-        with self.assertRaises(UsageError):
-            self.rel("/etc/passwd")
+    def test_absolute_trailing_slash(self):
+        self.assertEqual(self.map("/tmp/bar/"), ("/tmp/bar", "bar"))
 
-    def test_cwd_itself_rejected(self):
+    def test_parent_path_uses_basename(self):
+        self.assertEqual(self.map("../elsewhere"),
+                         ("/work/elsewhere", "elsewhere"))
+
+    def test_sneaky_escape_uses_basename(self):
+        self.assertEqual(self.map("sub/../../elsewhere")[1], "elsewhere")
+
+    def test_cwd_itself_uses_own_name(self):
+        self.assertEqual(self.map("."), ("/work/dir", "dir"))
+
+    def test_layout_never_contains_dotdot(self):
+        # every input either maps to a '..'-free layout path or is rejected
+        for arg in ("..", "../..", "/tmp/x", "sub/../../x", "."):
+            try:
+                _, rel = self.map(arg)
+            except UsageError:
+                continue
+            self.assertNotIn("..", rel.split("/"))
+
+    # degenerate inputs
+    def test_root_rejected(self):
         with self.assertRaises(UsageError):
-            self.rel(".")
+            self.map("/")
 
     def test_empty_rejected(self):
         with self.assertRaises(UsageError):
-            self.rel("")
+            self.map("")
 
 
 class TestRemoteDir(unittest.TestCase):

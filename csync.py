@@ -110,22 +110,30 @@ def split_remote_target(target):
     return host, path
 
 
-def repo_rel_path(arg, cwd):
-    """Normalize a repo argument to a safe path relative to cwd.
+def map_source(arg, cwd):
+    """Map a source argument to (absolute local path, destination layout path).
 
-    Accepts 'repo', './repo', 'repo/', 'subdir/repo', and absolute paths that
-    live under cwd. Rejects anything that escapes cwd, since the relative path
-    is reused verbatim under the remote base path.
+    Sources under the current directory keep their relative layout on the
+    destination ('subdir/repo' -> <dest>/subdir/repo). Anything else —
+    absolute paths, '~/...', '../...', or the current directory itself —
+    maps to its basename ('/tmp/bar' -> <dest>/bar). The layout path can
+    therefore never contain '..' and never escapes the destination base;
+    the price is that two sources may collide on the same name, which the
+    caller must reject.
     """
     if not arg.strip():
-        raise UsageError("empty repo path")
-    absolute = os.path.abspath(os.path.join(cwd, arg))
+        raise UsageError("empty source path")
+    absolute = os.path.abspath(os.path.join(cwd, os.path.expanduser(arg)))
     rel = os.path.relpath(absolute, cwd)
-    if rel == ".":
-        raise UsageError("repo path %r resolves to the current directory" % arg)
-    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
-        raise UsageError("repo path %r escapes the current directory" % arg)
-    return rel.replace(os.sep, "/")
+    under_cwd = (rel != "." and rel != os.pardir
+                 and not rel.startswith(os.pardir + os.sep)
+                 and not os.path.isabs(rel))
+    if under_cwd:
+        return absolute, rel.replace(os.sep, "/")
+    name = os.path.basename(absolute.rstrip(os.sep))
+    if not name:
+        raise UsageError("cannot derive a destination name from %r" % arg)
+    return absolute, name
 
 
 def remote_dir_for(base_path, rel):
@@ -464,14 +472,15 @@ def main(argv=None):
         # the last source into the target. user@localhost: forces real ssh.)
         local_dest = host == "localhost"
         repos = []  # (rel, local, ref, is_git)
-        seen = set()
+        seen = {}  # destination layout path -> source arg that claimed it
         for arg in args.repos:
             path_part, explicit_ref = split_repo_arg(arg)
-            rel = repo_rel_path(path_part, cwd)
+            local, rel = map_source(path_part, cwd)
             if rel in seen:
-                raise UsageError("duplicate repo path: %r" % arg)
-            seen.add(rel)
-            local = os.path.join(cwd, rel)
+                raise UsageError(
+                    "sources %r and %r would both sync to <dest>/%s"
+                    % (seen[rel], path_part, rel))
+            seen[rel] = path_part
             if not os.path.isdir(local):
                 raise UsageError("no such directory: %r" % arg)
             if is_git_repo(local):
