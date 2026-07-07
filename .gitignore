@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+# Claude Code local state (if you ever add shared config — .claude/settings.json,
+# .claude/agents/ — narrow this to .claude/settings.local.json)
+.claude/
