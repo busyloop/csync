@@ -186,6 +186,21 @@ class TestMapSource(unittest.TestCase):
             self.map("")
 
 
+class TestRefCandidates(unittest.TestCase):
+    def test_fetched_prefers_remote_tracking_ref(self):
+        self.assertEqual(csync.ref_candidates("origin", "master", fetched=True),
+                         ["refs/remotes/origin/master", "master"])
+
+    def test_not_fetched_resolves_locally_only(self):
+        # stale remote-tracking refs must not shadow the local branch
+        self.assertEqual(csync.ref_candidates("origin", "master", fetched=False),
+                         ["master"])
+
+    def test_custom_remote_name(self):
+        self.assertEqual(csync.ref_candidates("upstream", "main", fetched=True)[0],
+                         "refs/remotes/upstream/main")
+
+
 class TestRemoteDir(unittest.TestCase):
     def test_mapping(self):
         self.assertEqual(csync.remote_dir_for("/home/box", "subdir/repo3"),

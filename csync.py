@@ -171,6 +171,12 @@ def current_ref(repo):
     raise UsageError("cannot determine checked-out ref of %s (no commits yet?)" % repo)
 
 
+def has_remote(repo, remote_name):
+    res = run(["git", "-C", repo, "config", "--get", "remote.%s.url" % remote_name],
+              capture=True)
+    return res.returncode == 0
+
+
 def git_fetch(repo, remote_name, verbose):
     # No --tags: it hard-fails with "would clobber existing tag" whenever a
     # local tag diverged from the remote's. Default tag auto-following still
@@ -186,15 +192,27 @@ def git_fetch(repo, remote_name, verbose):
                         % (remote_name, res.returncode, reason))
 
 
-def resolve_commit(repo, remote_name, ref, verbose):
-    """Resolve ref to a commit, preferring the just-fetched remote-tracking ref."""
-    candidates = ["refs/remotes/%s/%s" % (remote_name, ref), ref]
+def ref_candidates(remote_name, ref, fetched):
+    """rev-parse candidates for a ref, in resolution order.
+
+    After a successful fetch the remote-tracking ref wins (it is what was just
+    fetched); without one (remote missing or unreachable) only local resolution
+    is attempted — a stale remote-tracking ref must not shadow the local branch.
+    """
+    if fetched:
+        return ["refs/remotes/%s/%s" % (remote_name, ref), ref]
+    return [ref]
+
+
+def resolve_commit(repo, remote_name, ref, verbose, fetched=True):
+    """Resolve ref to a commit; see ref_candidates for the resolution order."""
+    candidates = ref_candidates(remote_name, ref, fetched)
     for cand in candidates:
         res = run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", cand + "^{commit}"],
                   verbose=verbose, capture=True)
         if res.returncode == 0:
             return res.stdout.strip(), cand
-    raise SyncError("cannot resolve ref %r (tried %s and %s)" % (ref, candidates[0], ref))
+    raise SyncError("cannot resolve ref %r (tried %s)" % (ref, " and ".join(candidates)))
 
 
 def add_worktree(repo, commit, path, verbose):
@@ -338,12 +356,31 @@ def prepare_dest(remote_dir, args, local_dest):
 
 
 def sync_repo(local, rel, ref, host, base_path, args, mkpath, local_dest):
-    """Sync one git repository at ref. Raises SyncError on any failure."""
+    """Sync one git repository at ref. Raises SyncError on any failure.
+
+    A repo without a usable remote still syncs: no configured remote skips the
+    fetch, a failing fetch (unreachable or deleted remote) degrades to a
+    warning, and in both cases the ref is resolved locally. The returned note
+    records that fallback for the summary's detail column.
+    """
     v = args.verbose
     remote_dir = remote_dir_for(base_path, rel)
 
-    git_fetch(local, args.remote_name, v)
-    commit, resolved = resolve_commit(local, args.remote_name, ref, v)
+    note = None
+    if not has_remote(local, args.remote_name):
+        note = "local ref (no remote %r)" % args.remote_name
+        if v:
+            print("    no remote %r configured; resolving %r locally"
+                  % (args.remote_name, ref), flush=True)
+    else:
+        try:
+            git_fetch(local, args.remote_name, v)
+        except SyncError as exc:
+            note = "local ref (fetch failed)"
+            print("csync: warning: %s: %s; falling back to the local ref"
+                  % (rel, exc), file=sys.stderr)
+    commit, resolved = resolve_commit(local, args.remote_name, ref, v,
+                                      fetched=note is None)
     if v:
         print("    resolved %s -> %s" % (resolved, commit[:12]), flush=True)
 
@@ -388,7 +425,7 @@ def sync_repo(local, rel, ref, host, base_path, args, mkpath, local_dest):
         remove_worktree(local, worktree, v)
         shutil.rmtree(tmp, ignore_errors=True)
 
-    return "%s:%s/" % (host, remote_dir), commit, changes
+    return "%s:%s/" % (host, remote_dir), commit, changes, note
 
 
 def sync_plain(local, rel, host, base_path, args, mkpath, local_dest):
@@ -512,9 +549,11 @@ def main(argv=None):
             else:
                 print("--> [%d/%d] %s (plain directory)" % (i, len(repos), rel), flush=True)
         try:
+            note = None
             if is_git:
-                dest, commit, changes = sync_repo(local, rel, ref, host, base_path,
-                                                  args, mkpath, local_dest)
+                dest, commit, changes, note = sync_repo(local, rel, ref, host,
+                                                        base_path, args, mkpath,
+                                                        local_dest)
                 result["commit"] = commit[:12]
             else:
                 dest, changes = sync_plain(local, rel, host, base_path,
@@ -523,8 +562,9 @@ def main(argv=None):
                 print("    %s -> %s" % (ok_status, dest), flush=True)
             result["status"] = ok_status
             result["dest"] = dest
-            if args.dry_run:
-                result["detail"] = "%d changes" % changes
+            details = (["%d changes" % changes] if args.dry_run else []) \
+                      + ([note] if note else [])
+            result["detail"] = "; ".join(details) or None
         except SyncError as exc:
             print("csync: error: %s: %s" % (rel, exc), file=sys.stderr)
             result["status"] = "failed"

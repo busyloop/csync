@@ -169,6 +169,13 @@ error.
   and commit hashes), create a temporary detached worktree at that commit,
   rsync it with `-a` (permissions preserved) and `--delete` (unless
   `--no-delete`), then remove the worktree.
+- Repos without a usable remote still sync: when the repo has no remote of
+  the configured name the fetch is skipped, and when the fetch fails
+  (unreachable or deleted remote) a warning goes to stderr instead of
+  failing the run. In both cases the ref is resolved locally only — a stale
+  remote-tracking ref never shadows the local branch — and the summary's
+  `detail` column records it (`local ref (no remote 'origin')` /
+  `local ref (fetch failed)`).
 - Plain (non-git) directories are rsynced verbatim — there is no notion of
   tracked/ignored files without git, so everything in them is synced except
   `--exclude` patterns. A `@ref` suffix on a plain directory is an error.
